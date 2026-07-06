@@ -1,0 +1,63 @@
+name: Auto Post Real EU News Every 3 Hours
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  autopost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install & Run Auto News Bot
+        run: |
+          pip install feedparser beautifulsoup4 requests lxml
+          python << 'EOF'
+          import feedparser, datetime, requests
+          from bs4 import BeautifulSoup
+          RSS_FEEDS = {
+            'Euronews': 'https://feeds.euronews.com/en/europe',
+            'Politico EU': 'https://www.politico.eu/feed/',
+            'BBC Europe': 'http://feeds.bbci.co.uk/news/world/europe/rss.xml'
+          }
+          EU_KEYWORDS = ['eu', 'european', 'brussels', 'germany', 'france', 'italy', 'spain']
+          def get_real_image(entry):
+              if 'media_content' in entry: return entry.media_content[0]['url']
+              if 'media_thumbnail' in entry: return entry.media_thumbnail[0]['url']
+              try:
+                  html = requests.get(entry.link, timeout=10).text
+                  soup = BeautifulSoup(html, 'lxml')
+                  og = soup.find('meta', property='og:image')
+                  if og: return og['content']
+              except: pass
+              return 'https://images.unsplash.com/photo-1521295121783-8a321d551ad2?w=800'
+          all_news = []
+          for source, url in RSS_FEEDS.items():
+              feed = feedparser.parse(url)
+              for entry in feed.entries[:2]:
+                  if any(k in entry.title.lower() for k in EU_KEYWORDS):
+                      summary = BeautifulSoup(entry.summary, 'html.parser').get_text()[:400]
+                      all_news.append({
+                          'source': source, 'title': entry.title, 'link': entry.link,
+                          'date': datetime.datetime.now().strftime('%d %b %Y'),
+                          'image': get_real_image(entry), 'summary': summary + '...'
+                      })
+          with open('index.html', 'r', encoding='utf-8') as f: html = f.read()
+          news_html = ''
+          for n in all_news:
+              news_html += f'''<article class="news-item"><img src="{n['image']}" alt="{n['title']}" loading="lazy"><div class="news-body"><span class="source">{n['source']}</span><h2><a href="{n['link']}" target="_blank">{n['title']}</a></h2><p class="meta">{n['date']}</p><p>{n['summary']}</p><a href="{n['link']}" target="_blank">Read Full at {n['source']} →</a></div></article>'''
+          if '<!--AUTO_NEWS_HERE-->' in html:
+              html = html.replace('<!--AUTO_NEWS_HERE-->', f'<!--AUTO_NEWS_HERE-->\n{news_html}')
+              with open('index.html', 'w', encoding='utf-8') as f: f.write(html)
+          EOF
+      - name: Commit new posts
+        run: |
+          git config user.name 'EU News Bot'
+          git config user.email 'bot@users.noreply.github.com'
+          git add index.html
+          git diff --staged --quiet || git commit -m "Auto: Posted real EU news"
+          git push
